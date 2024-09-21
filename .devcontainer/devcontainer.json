@@ -1,0 +1,19 @@
+{
+	"image": "ghcr.io/backwardspy/pigeon-devcontainer:latest",
+	"features": {
+		"ghcr.io/devcontainers/features/rust:1": {}
+	},
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"terminal.integrated.defaultProfile.linux": "fish",
+				"rust-analyzer.cargo.targetDir": ".ra-target"
+			}
+		}
+	},
+	"mounts": [
+		"source=${localWorkspaceFolderBasename}-target,target=${containerWorkspaceFolder}/target,type=volume",
+		"source=${localWorkspaceFolderBasename}-ra-target,target=${containerWorkspaceFolder}/.ra-target,type=volume"
+	],
+	"postCreateCommand": ".devcontainer/postcreate.sh"
+}
