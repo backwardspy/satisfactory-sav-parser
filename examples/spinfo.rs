@@ -3,7 +3,9 @@ use std::{
     io::{BufReader, Cursor, Read as _},
 };
 
+use binrw::BinReaderExt as _;
 use flate2::read::ZlibDecoder;
+use satisfactory_sav_parser::SaveFileBody;
 
 fn main() -> anyhow::Result<()> {
     let Some(ref save_path) = std::env::args().nth(1) else {
@@ -31,28 +33,48 @@ fn main() -> anyhow::Result<()> {
     println!(
         "read {} chunks totalling {} kB ({} kB uncompressed)",
         chunks.len(),
-        chunks.iter().map(|c| c.compressed_size).sum::<i64>() / 1024,
-        chunks.iter().map(|c| c.uncompressed_size).sum::<i64>() / 1024,
+        chunks
+            .iter()
+            .map(|c| c.compressed_size_summary)
+            .sum::<i64>()
+            / 1024,
+        chunks
+            .iter()
+            .map(|c| c.uncompressed_size_summary)
+            .sum::<i64>()
+            / 1024,
     );
 
-    let mut body_data = vec![];
+    let mut body_data_raw = vec![];
     for chunk in &chunks {
-        let mut decompressed = vec![0; chunk.uncompressed_size as usize];
-        let reader = Cursor::new(&chunk.chunk_bytes[..]);
+        let reader = Cursor::new(&chunk.chunk_bytes);
         ZlibDecoder::new(reader)
-            .read_exact(&mut decompressed)
-            .expect("can decompress chunk");
-        body_data.extend_from_slice(&decompressed);
+            .read_to_end(&mut body_data_raw)
+            .expect("can decompress body data");
     }
 
     assert_eq!(
-        body_data.len() as i64,
-        chunks.iter().map(|c| c.uncompressed_size).sum::<i64>()
+        body_data_raw.len() as i64,
+        chunks
+            .iter()
+            .map(|c| c.uncompressed_size_summary)
+            .sum::<i64>()
     );
-    println!("decompressed {} kB of body data", body_data.len() / 1024);
+    println!(
+        "decompressed {} kB of body data",
+        body_data_raw.len() / 1024
+    );
 
-    std::fs::write("save_dump.bin", body_data)?;
+    std::fs::write("save_dump.bin", &body_data_raw)?;
     println!("wrote decompressed data to save_dump.bin");
+
+    println!("attempting decode...");
+    match Cursor::new(&body_data_raw).read_le::<SaveFileBody>() {
+        Ok(body) => {
+            dbg!(body);
+        }
+        Err(e) => eprintln!("failed to decode body:\n{e}"),
+    }
 
     Ok(())
 }

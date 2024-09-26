@@ -1,11 +1,12 @@
 //! https://satisfactory.fandom.com/wiki/Save_files
+//! https://github.com/moritz-h/satisfactory-3d-map/blob/master/docs/SATISFACTORY_SAVE.md#type-and-object-reference
 use std::io::{Read, Seek};
 
-use adastring::ADAString;
 use binrw::{BinRead, BinReaderExt, BinResult};
 use thiserror::Error;
+use types::{array::Array, string::String};
 
-mod adastring;
+mod types;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -13,26 +14,31 @@ pub enum Error {
     BinRead(#[from] binrw::Error),
 }
 
+fn adabool(value: u32) -> bool {
+    value != 0
+}
+
 #[derive(Debug, BinRead)]
 #[br(little)]
 pub struct SaveFileHeader {
-    pub version: i32,
+    pub save_header_version: i32,
     pub save_version: i32,
     pub build_version: i32,
-    pub map_name: ADAString,
-    pub map_options: ADAString,
-    pub session_name: ADAString,
-    pub seconds_played: i32,
-    pub save_timestamp: i64,
+    pub map_name: String,
+    pub map_options: String,
+    pub session_name: String,
+    pub play_duration_seconds: i32,
+    pub save_date_time: i64,
     pub session_visibility: i8,
     pub editor_object_version: i32,
-    pub mod_metadata: ADAString,
-    pub mod_flags: i32,
-    pub save_identifier: ADAString,
-    #[br(map(|x: i32| x != 0))]
+    pub mod_metadata: String,
+    #[br(map(adabool))]
+    pub is_modded_save: bool,
+    pub save_identifier: String,
+    #[br(map(adabool))]
     pub is_partitioned_world: bool,
     pub md5_hash: [u8; 20],
-    #[br(map(|x: i32| x != 0))]
+    #[br(map(adabool))]
     pub is_creative_mode_enabled: bool,
 }
 
@@ -42,12 +48,13 @@ pub struct CompressedSaveFileBody {
     pub archive_header: u32,
     #[br(assert(max_chunk_size == 128 * 1024))]
     pub max_chunk_size: i64,
-    #[br(if(archive_header == 0x22222222))]
-    pub compression_algorithm: i8,
+    // 3 = zlib
+    #[br(if(archive_header == 0x22222222), assert(compressor_num == 3))]
+    pub compressor_num: u8,
+    pub compressed_size_summary: i64,
+    pub uncompressed_size_summary: i64,
     pub compressed_size: i64,
     pub uncompressed_size: i64,
-    pub compressed_size_2: i64,
-    pub uncompressed_size_2: i64,
     #[br(count = compressed_size)]
     pub chunk_bytes: Vec<u8>,
 }
@@ -55,34 +62,28 @@ pub struct CompressedSaveFileBody {
 #[derive(Debug, BinRead)]
 #[br(little)]
 pub struct SaveFileBody {
-    pub uncompressed_size: i32,
-    pub sublevel_count: i32,
-    #[br(count = sublevel_count)]
-    pub sub_levels: Vec<Level>,
+    pub uncompressed_size: i64,
+    // pub sublevel_count: i32,
+    #[br(args { inner: LevelBinReadArgs { is_sublevel: true } })]
+    pub sub_levels: Array<Level>,
+    #[br(args { is_sublevel: false })]
     pub persistent_level: Level,
-    pub object_reference_count: i32,
-    #[br(count = object_reference_count)]
-    pub object_references: Vec<ObjectReference>,
+    pub object_references: Array<ObjectReference>,
 }
 
 #[derive(Debug, BinRead)]
-#[br(little)]
+#[br(little, import { is_sublevel: bool })]
 pub struct Level {
-    pub sublevel_name: ADAString,
+    #[br(if(is_sublevel))]
+    pub sublevel_name: String,
     pub object_header_and_collectables_size: i32,
-    pub object_header_count: i32,
-    #[br(count = object_header_count)]
-    pub object_headers: Vec<ObjectHeader>,
-    pub collectables_count: i32,
-    #[br(count = collectables_count)]
-    pub collectables: Vec<ObjectReference>,
+    pub object_headers: Array<ObjectHeader>,
+    pub collectables: Array<ObjectReference>,
     pub objects_size: i32,
     pub object_count: i32,
-    #[br(parse_with = parse_objects, args(&object_headers))]
+    #[br(parse_with = parse_objects, args(&object_headers.0))]
     pub objects: Vec<Object>,
-    pub collectables_count_2: i32,
-    #[br(count = collectables_count_2)]
-    pub collections_2: Vec<ObjectReference>,
+    pub collections_2: Array<ObjectReference>,
 }
 
 #[binrw::parser(reader, endian)]
@@ -123,9 +124,9 @@ pub enum ObjectType {
 #[derive(Debug, BinRead)]
 #[br(little)]
 pub struct ActorHeader {
-    pub type_path: ADAString,
-    pub root_object: ADAString,
-    pub instance_name: ADAString,
+    pub type_path: String,
+    pub root_object: String,
+    pub instance_name: String,
     pub need_transform: i32,
     pub rotation_x: f32,
     pub rotation_y: f32,
@@ -143,10 +144,10 @@ pub struct ActorHeader {
 #[derive(Debug, BinRead)]
 #[br(little)]
 pub struct ComponentHeader {
-    pub type_path: ADAString,
-    pub root_object: ADAString,
-    pub instance_name: ADAString,
-    pub parent_actor_name: ADAString,
+    pub type_path: String,
+    pub root_object: String,
+    pub instance_name: String,
+    pub parent_actor_name: String,
 }
 
 #[derive(Debug, BinRead)]
@@ -162,11 +163,9 @@ pub enum Object {
 #[br(little)]
 pub struct ActorObject {
     pub size: i32,
-    pub parent_object_root: ADAString,
-    pub parent_object_name: ADAString,
-    pub component_count: i32,
-    #[br(count = component_count)]
-    pub components: Vec<ObjectReference>,
+    pub parent_object_root: String,
+    pub parent_object_name: String,
+    pub components: Array<ObjectReference>,
     pub properties: PropertyList,
     pub trailing: [u8; 16],
 }
@@ -182,15 +181,41 @@ pub struct ComponentObject {
 #[derive(Debug, BinRead)]
 #[br(little)]
 pub struct ObjectReference {
-    pub level_name: ADAString,
-    pub path_name: ADAString,
+    pub level_name: String,
+    pub path_name: String,
 }
 
 #[derive(Debug, BinRead)]
-#[br(little, import { prop_type: ADAString })]
+#[br(little, import { prop_type: String })]
 pub enum Property {
     #[br(pre_assert(prop_type == "ArrayProperty"))]
     Array(ArrayProperty),
+    #[br(pre_assert(prop_type == "BoolProperty"))]
+    Bool(BoolProperty),
+    #[br(pre_assert(prop_type == "ByteProperty"))]
+    Byte(ByteProperty),
+    #[br(pre_assert(prop_type == "EnumProperty"))]
+    Enum(EnumProperty),
+    #[br(pre_assert(prop_type == "FloatProperty"))]
+    Float(FloatProperty),
+    #[br(pre_assert(prop_type == "IntProperty"))]
+    Int(IntProperty),
+    #[br(pre_assert(prop_type == "Int64Property"))]
+    Int64(Int64Property),
+    #[br(pre_assert(prop_type == "MapProperty"))]
+    Map(MapProperty),
+    #[br(pre_assert(prop_type == "NameProperty"))]
+    Name(NameProperty),
+    #[br(pre_assert(prop_type == "ObjectProperty"))]
+    Object(ObjectProperty),
+    #[br(pre_assert(prop_type == "SetProperty"))]
+    Set(SetProperty),
+    #[br(pre_assert(prop_type == "StrProperty"))]
+    Str(StrProperty),
+    #[br(pre_assert(prop_type == "StructProperty"))]
+    Struct(StructProperty),
+    #[br(pre_assert(prop_type == "TextProperty"))]
+    Text(TextProperty),
 }
 
 #[derive(Debug, BinRead)]
@@ -198,11 +223,10 @@ pub enum Property {
 pub struct ArrayProperty {
     pub size: i32,
     pub index: i32,
-    pub element_type: ADAString,
+    pub element_type: String,
     #[br(pad_before = 1)]
-    pub length: i32,
-    #[br(count = length, args { inner: PropertyBinReadArgs { prop_type: element_type.clone() } })]
-    pub elements: Vec<Property>,
+    #[br(args { inner: PropertyBinReadArgs { prop_type: element_type.clone() } })]
+    pub elements: Array<Property>,
 }
 
 #[derive(Debug, BinRead)]
@@ -210,7 +234,7 @@ pub struct ArrayProperty {
 pub struct BoolProperty {
     #[br(pad_before = 4)]
     pub index: i32,
-    #[br(map(|x: i32| x != 0), pad_after = 1)]
+    #[br(map(adabool), pad_after = 1)]
     pub value: bool,
 }
 
@@ -219,18 +243,18 @@ pub struct BoolProperty {
 pub struct ByteProperty {
     pub size: i32,
     pub index: i32,
-    pub prop_type: ADAString,
+    pub prop_type: String,
     #[br(args { prop_type: prop_type.clone() }, pad_before = 1)]
     pub value: BytePropertyValue,
 }
 
 #[derive(Debug, BinRead)]
-#[br(little, import { prop_type: ADAString })]
+#[br(little, import { prop_type: String })]
 pub enum BytePropertyValue {
     #[br(pre_assert(prop_type == "None"))]
     Byte(i8),
     #[br(pre_assert(prop_type != "None"))]
-    String(ADAString),
+    String(String),
 }
 
 #[derive(Debug, BinRead)]
@@ -238,9 +262,9 @@ pub enum BytePropertyValue {
 pub struct EnumProperty {
     pub size: i32,
     pub index: i32,
-    pub prop_type: ADAString,
+    pub prop_type: String,
     #[br(pad_before = 1)]
-    pub value: ADAString,
+    pub value: String,
 }
 
 #[derive(Debug, BinRead)]
@@ -275,17 +299,16 @@ pub struct Int64Property {
 pub struct MapProperty {
     pub size: i32,
     pub index: i32,
-    pub key_type: ADAString,
-    pub value_type: ADAString,
+    pub key_type: String,
+    pub value_type: String,
     #[br(pad_before = 1)]
     pub mode_type: i32,
-    pub element_count: i32,
-    #[br(count = element_count, args { inner: KVPairBinReadArgs { key_type: key_type.clone(), value_type: value_type.clone() } })]
-    pub elements: Vec<KVPair>,
+    #[br(args { inner: KVPairBinReadArgs { key_type: key_type.clone(), value_type: value_type.clone() } })]
+    pub elements: Array<KVPair>,
 }
 
 #[derive(Debug, BinRead)]
-#[br(little, import { key_type: ADAString, value_type: ADAString })]
+#[br(little, import { key_type: String, value_type: String })]
 pub struct KVPair {
     #[br(args { prop_type: key_type.clone() })]
     pub key: Property,
@@ -299,7 +322,7 @@ pub struct NameProperty {
     pub size: i32,
     pub index: i32,
     #[br(pad_before = 1)]
-    pub value: ADAString,
+    pub value: String,
 }
 
 #[derive(Debug, BinRead)]
@@ -308,8 +331,8 @@ pub struct ObjectProperty {
     pub size: i32,
     pub index: i32,
     #[br(pad_before = 1)]
-    pub level_name: ADAString,
-    pub path_name: ADAString,
+    pub level_name: String,
+    pub path_name: String,
 }
 
 #[derive(Debug, BinRead)]
@@ -317,11 +340,11 @@ pub struct ObjectProperty {
 pub struct SetProperty {
     pub size: i32,
     pub index: i32,
-    pub element_type: ADAString,
+    pub element_type: String,
     #[br(pad_before = 1 + 4)]
     pub element_count: i32,
-    #[br(count = element_count, args { inner: PropertyBinReadArgs { prop_type: element_type.clone() } })]
-    pub elements: Vec<Property>,
+    #[br(args { inner: PropertyBinReadArgs { prop_type: element_type.clone() } })]
+    pub elements: Array<Property>,
 }
 
 #[derive(Debug, BinRead)]
@@ -330,7 +353,7 @@ pub struct StrProperty {
     pub size: i32,
     pub index: i32,
     #[br(pad_before = 1)]
-    pub value: ADAString,
+    pub value: String,
 }
 
 #[derive(Debug, BinRead)]
@@ -338,7 +361,7 @@ pub struct StrProperty {
 pub struct StructProperty {
     pub size: i32,
     pub index: i32,
-    pub struct_type: ADAString,
+    pub struct_type: String,
     #[br(pad_before = 8 + 8 + 1, args { is_struct_property_payload: true })]
     pub typed_data: TypedData,
 }
@@ -354,15 +377,15 @@ pub enum TypedData {
         max_x: f32,
         max_y: f32,
         max_z: f32,
-        #[br(map(|x: i32| x != 0))]
+        #[br(map(adabool))]
         is_value: bool,
     },
     FluidBox(f32),
     InventoryItem {
         #[br(pad_before = 4)]
-        item_type: ADAString,
-        level_name: ADAString,
-        path_name: ADAString,
+        item_type: String,
+        level_name: String,
+        path_name: String,
         #[br(if(is_struct_property_payload))]
         extra: IntProperty,
     },
@@ -379,8 +402,8 @@ pub enum TypedData {
         w: f32,
     },
     RailroadTrackPosition {
-        level_name: ADAString,
-        path_name: ADAString,
+        level_name: String,
+        path_name: String,
         offset: f32,
         forward: f32,
     },
@@ -399,9 +422,9 @@ pub struct TextProperty {
     #[br(pad_before = 1)]
     pub flags: i32,
     pub history_type: i8,
-    #[br(map(|x: i32| x != 0))]
+    #[br(map(adabool))]
     pub is_culture_invariant: bool,
-    pub value: ADAString,
+    pub value: String,
 }
 
 #[derive(Debug)]
@@ -420,12 +443,12 @@ impl BinRead for PropertyList {
         let mut properties = Vec::new();
 
         loop {
-            let name = ADAString::read_options(reader, endian, ())?;
+            let name = String::read_options(reader, endian, ())?;
             if name == "None" {
                 break;
             }
 
-            let prop_type = ADAString::read_options(reader, endian, ())?;
+            let prop_type = String::read_options(reader, endian, ())?;
             properties.push(Property::read_options(
                 reader,
                 endian,

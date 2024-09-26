@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 binrw = "0.14.0"
 flate2 = "1.0.33"
+indexmap = "2.5.0"
 thiserror = "1.0.63"
 
 [dev-dependencies]
